@@ -1,0 +1,26 @@
+<resources>
+    <string name="app_name">USSD Pay</string>
+    <string name="privacy_policy_title">Privacy Policy</string>
+    <string name="privacy_policy_content">This Privacy Policy governs the manner in which the "USSD Pay" application collects, uses, maintains, and discloses information collected from users. This privacy policy applies to the App and all products and services offered.
+
+<b>1. Information Collection and Telephony Permissions</b>
+&#8226; The App strictly requests specific standard telephony permissions (such as CALL_PHONE, READ_PHONE_STATE).
+&#8226; These are unconditionally required to enable the core functionality of reading your SIM card state and executing local USSD network codes for mobile carrier communications.
+
+<b>2. Data Privacy and Local Storage</b>
+&#8226; We uphold strict privacy standards and formally guarantee that no phone call data, logs, SIM details, or any personally identifiable information transmitted through the App will be collected.
+&#8226; The App operates independently as an offline graphical interface to interact within your carrier\'s secure telecommunications infrastructure.
+&#8226; Any transaction history saved by the user is logged strictly locally on the physical constraints of the user\'s device.
+
+<b>3. Sharing and Third-Party Policy</b>
+&#8226; We do not sell, trade, rent, transmit, or otherwise share any personal, financial, telephony data, or PIN numbers with third parties.
+&#8226; All operational processes execute securely and entirely within the user device environment.
+
+<b>4. Changes to this Privacy Policy</b>
+&#8226; We retain the discretion to update this privacy policy at any time. When we do, we will revise the updated date at the bottom of this page.
+&#8226; We encourage Users to frequently check this policy for any changes to stay informed about how we are helping to protect the personal information we collect.
+
+<b>5. Contact Information</b>
+For further inquiries or a comprehensive review of our policies, please consult our detailed legal documentation page on our official website:
+</string>
+</resources>
