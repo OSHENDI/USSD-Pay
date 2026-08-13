@@ -13,18 +13,23 @@ object UssdManager {
 
     fun normalizePhone(phone: String): String {
         var digits = phone.filter { it.isDigit() }
-        if (digits.startsWith("05") && digits.length >= 10) {
-            return digits.take(10)
-        }
-        if (digits.startsWith("972")) {
-            digits = digits.substring(3)
+        if (digits.isEmpty()) return ""
+
+        if (digits.startsWith("00970")) {
+            digits = digits.substring(5)
+        } else if (digits.startsWith("00972")) {
+            digits = digits.substring(5)
         } else if (digits.startsWith("970")) {
             digits = digits.substring(3)
+        } else if (digits.startsWith("972")) {
+            digits = digits.substring(3)
         }
-        if (!digits.startsWith("0")) {
+
+        if (digits.startsWith("5")) {
             digits = "0$digits"
         }
-        return digits.take(10)
+
+        return if (digits.length > 10) digits.take(10) else digits
     }
 
     fun isValidPhone(phone: String): Boolean {
@@ -57,11 +62,24 @@ object UssdManager {
     fun translateResponse(raw: String, language: AppLanguage): TranslationResult {
         val trimmed = raw.trim()
         
-        // Exact success match
-        val isSuccess = trimmed == "تم تحويل المبلغ بنجاح"
+        // Success match
+        val isSuccess = trimmed == "تم تحويل المبلغ بنجاح" ||
+                trimmed.contains("تم تحويل") ||
+                trimmed.contains("بنجاح") ||
+                trimmed.contains("تمت العملية")
         
-        // Check if raw matches any known error message (which we want to flag)
+        // Check if raw matches any known error message
         var isError = false
+        if (trimmed.contains("تأكد") ||
+            trimmed.contains("غير صحيح") ||
+            trimmed.contains("خطأ") ||
+            trimmed.contains("غير كاف") ||
+            trimmed.contains("لا يمكن") ||
+            trimmed.contains("فشل")
+        ) {
+            isError = true
+        }
+
         val englishMapped = ussdResponseMapArToEn[trimmed]
         if (englishMapped != null && !isSuccess) {
             isError = true
@@ -86,6 +104,100 @@ object UssdManager {
         val regex = Regex("""(\d+(?:[.,]\d+)?)""")
         val match = regex.find(raw)
         return match?.value ?: ""
+    }
+
+    @SuppressLint("MissingPermission")
+    fun sendPaymentUssd(
+        context: Context,
+        paymentType: PaymentType,
+        pin: String,
+        phone: String,
+        amount: String,
+        subscriptionId: Int?,
+        onResponse: (String) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        val normalized = normalizePhone(phone)
+
+        if (paymentType == PaymentType.FRIEND) {
+            val ussdCode = "*110*1*$pin*$normalized*$amount*1#"
+            sendUssd(context, ussdCode, subscriptionId, onResponse, onError)
+            return
+        }
+
+        // MERCHANT FLOW: Since Jawwal/Ooredoo blocks background interactive USSD (returning -1)
+        // and background Root Menu walking locks up the modem state, we must use the reliable
+        // MERCHANT FLOW: Dynamic Interactive Session
+        // Starting at the base merchant menu prevents carrier deep-link blocking
+        val baseCode = "*110*2#"
+        val mainHandler = Handler(Looper.getMainLooper())
+        
+        if (subscriptionId != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                val baseManager = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+                val manager = baseManager.createForSubscriptionId(subscriptionId)
+
+                val callback = object : TelephonyManager.UssdResponseCallback() {
+                    override fun onReceiveUssdResponse(
+                        tm: TelephonyManager?,
+                        request: String?,
+                        response: CharSequence?
+                    ) {
+                        val resp = response?.toString() ?: ""
+                        val activeTm = tm ?: manager
+
+                        // Determine the next step dynamically by reading the carrier's text
+                        val nextInput = when {
+                            resp.contains("الرقم السري") || resp.contains("PIN") -> pin
+                            resp.contains("رقم التاجر") || resp.contains("التاجر") -> normalized
+                            resp.contains("المبلغ") || resp.contains("ادخل") -> amount
+                            resp.contains("تأكيد") || resp.contains("1.") -> "1"
+                            resp.contains("بنجاح") || resp.contains("تم") -> {
+                                onResponse(resp) // Finished!
+                                return
+                            }
+                            resp.contains("تأكد") || resp.contains("خطأ") || resp.contains("فشل") -> {
+                                onResponse(resp) // Known carrier error
+                                return
+                            }
+                            else -> {
+                                // Unknown state. Send '0' to gracefully cancel and free the modem.
+                                try { activeTm.sendUssdRequest("0", this, mainHandler) } catch (e: Exception) {}
+                                onError("Unexpected response: $resp")
+                                return
+                            }
+                        }
+
+                        // Add a small 500ms safety buffer to ensure modem is ready for the reply
+                        mainHandler.postDelayed({
+                            try {
+                                activeTm.sendUssdRequest(nextInput, this, mainHandler)
+                            } catch (e: Exception) {
+                                onError("Failed to send input: $nextInput")
+                            }
+                        }, 500L) 
+                    }
+
+                    override fun onReceiveUssdResponseFailed(
+                        tm: TelephonyManager?,
+                        request: String?,
+                        failureCode: Int
+                    ) {
+                        val errorMsg = when (failureCode) {
+                            -1 -> "USSD Session dropped (-1). Check signal or merchant status."
+                            else -> "USSD failed (code $failureCode)."
+                        }
+                        onError(errorMsg)
+                    }
+                }
+
+                manager.sendUssdRequest(baseCode, callback, mainHandler)
+            } catch (e: Exception) {
+                onError("Failed to initiate USSD.")
+            }
+        } else {
+            onError("Unsupported Android version for background USSD.")
+        }
     }
 
     @SuppressLint("MissingPermission")

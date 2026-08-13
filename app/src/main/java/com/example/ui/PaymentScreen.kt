@@ -1511,7 +1511,7 @@ fun SettingsScreenContent(
 
                     // Item 3: Help & Support link
                     Row(
-                        modifier = Modifier.fillMaxWidth().clickable(interactionSource = androidx.compose.runtime.remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null) { },
+                        modifier = Modifier.fillMaxWidth().clickable(interactionSource = androidx.compose.runtime.remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null) { uriHandler.openUri("https://utiapps.netlify.app/support.html") },
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -2188,8 +2188,9 @@ fun SelfQrSheetContent(
     var qrBitmap by remember { mutableStateOf<Bitmap?>(null) }
 
     LaunchedEffect(myNumber, qrType) {
-        val payload = if (myNumber.isNotEmpty()) "$myNumber|$qrType" else ""
-        if (payload.isNotEmpty() && !payload.startsWith("|")) {
+        val normalized = UssdManager.normalizePhone(myNumber)
+        if (normalized.length == 10) {
+            val payload = PmaQrManager.generatePmaQrPayload(normalized, qrType)
             qrBitmap = generateQrCode(payload)
         } else {
             qrBitmap = null
@@ -2368,7 +2369,7 @@ fun SelfQrSheetContent(
 
 // Helper to generate a crisp Barcode bitmap
 private fun generateQrCode(content: String): Bitmap? {
-    if (content.isBlank() || content.startsWith("|")) return null
+    if (content.isBlank()) return null
     return try {
         val size = 512
         val bitMatrix: BitMatrix = MultiFormatWriter().encode(
@@ -2588,7 +2589,7 @@ fun PhoneSetupScreenContent(state: UiState, viewModel: MainViewModel, isAr: Bool
                 focusedContainerColor = MaterialTheme.colorScheme.surfaceContainer,
                 unfocusedContainerColor = Color.Transparent
             ),
-            shape = RoundedCornerShape(percent = 50)
+            shape = RoundedCornerShape(24.dp)
         )
         
         Spacer(modifier = Modifier.height(32.dp))

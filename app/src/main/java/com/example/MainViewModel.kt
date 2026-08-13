@@ -128,20 +128,19 @@ class MainViewModel : ViewModel() {
     }
 
     fun updateRecipient(phone: String, context: Context) {
-        val filtered = phone.filter { it.isDigit() }
-        if (filtered.length > 10) return
+        val normalized = UssdManager.normalizePhone(phone)
         
-        if (filtered.length == 10) {
-            _uiState.updateState { it.copy(recipient = filtered) }
+        if (normalized.length == 10) {
+            _uiState.updateState { it.copy(recipient = normalized) }
             val resolverContext = context.applicationContext
             viewModelScope.launch(Dispatchers.IO) {
-                val displayName = ContactsHelper.lookupName(resolverContext, UssdManager.normalizePhone(filtered)) ?: ""
+                val displayName = ContactsHelper.lookupName(resolverContext, normalized) ?: ""
                 withContext(Dispatchers.Main) {
                     _uiState.updateState { it.copy(recipientName = displayName) }
                 }
             }
         } else {
-            _uiState.updateState { it.copy(recipient = filtered, recipientName = "") }
+            _uiState.updateState { it.copy(recipient = normalized, recipientName = "") }
         }
     }
 
@@ -178,11 +177,9 @@ class MainViewModel : ViewModel() {
     }
 
     fun setSelfPhone(phone: String) {
-        val filtered = phone.filter { it.isDigit() }
-        if (filtered.length <= 10) {
-            prefsManager?.setSelfPhone(filtered)
-            _uiState.updateState { it.copy(selfPhone = filtered) }
-        }
+        val normalized = UssdManager.normalizePhone(phone)
+        prefsManager?.setSelfPhone(normalized)
+        _uiState.updateState { it.copy(selfPhone = normalized) }
     }
 
     fun showError(message: String) {
@@ -291,14 +288,16 @@ class MainViewModel : ViewModel() {
         val resolvedSimId = _uiState.value.selectedSimId ?: currentSims.firstOrNull()?.subscriptionId
         
         val state = _uiState.value
-        val ussdStr = UssdManager.buildPaymentString(state.paymentType, state.secretCode, state.recipient, state.amount)
         
         payJob = viewModelScope.launch {
             try {
-                withTimeout(5000L) {
-                    UssdManager.sendUssd(
+                withTimeout(60000L) {
+                    UssdManager.sendPaymentUssd(
                         context = context,
-                        ussdCode = ussdStr,
+                        paymentType = state.paymentType,
+                        pin = state.secretCode,
+                        phone = state.recipient,
+                        amount = state.amount,
                         subscriptionId = resolvedSimId,
                         onResponse = { response ->
                             payJob?.cancel()
@@ -493,29 +492,17 @@ class MainViewModel : ViewModel() {
 
     fun setRecipientFromQr(content: String, context: Context) {
         try {
-            if (content.contains("|")) {
-                val parts = content.split("|")
-                val rawPhone = parts[0].trim()
-                val resolvedType = if (parts.size > 1 && parts[1].trim().lowercase() == "merchant") {
-                    PaymentType.MERCHANT
-                } else {
-                    PaymentType.FRIEND
-                }
-                val normalized = UssdManager.normalizePhone(rawPhone)
-                val displayName = ContactsHelper.lookupName(context, normalized) ?: ""
+            val parsed = PmaQrManager.parseQrCode(content)
+            if (parsed != null) {
+                val (normalizedPhone, resolvedType) = parsed
+                val displayName = ContactsHelper.lookupName(context, normalizedPhone) ?: ""
                 _uiState.updateState { it.copy(
-                    recipient = normalized,
+                    recipient = normalizedPhone,
                     recipientName = displayName,
                     paymentType = resolvedType
                 ) }
             } else {
-                val normalized = UssdManager.normalizePhone(content)
-                val displayName = ContactsHelper.lookupName(context, normalized) ?: ""
-                _uiState.updateState { it.copy(
-                    recipient = normalized,
-                    recipientName = displayName,
-                    paymentType = PaymentType.FRIEND
-                ) }
+                showError("Invalid QR content scanned.")
             }
         } catch (e: Exception) {
             showError("Invalid QR content scanned.")
