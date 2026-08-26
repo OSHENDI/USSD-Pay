@@ -3,28 +3,18 @@ package com.example.ui.theme
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.unit.sp
 import com.example.R
 
-import androidx.compose.ui.text.font.FontLoadingStrategy
-import androidx.compose.ui.text.font.FontStyle
-
-import androidx.compose.ui.text.googlefonts.GoogleFont
-import androidx.compose.ui.text.googlefonts.Font
-
-val provider = GoogleFont.Provider(
-    providerAuthority = "com.google.android.gms.fonts",
-    providerPackage = "com.google.android.gms",
-    certificates = R.array.com_google_android_gms_fonts_certs
-)
-
-val appFontFamily = FontFamily(
-    Font(googleFont = GoogleFont("Google Sans Text"), fontProvider = provider),
-    Font(googleFont = GoogleFont("Google Sans"), fontProvider = provider),
-    Font(googleFont = GoogleFont("Noto Sans Arabic"), fontProvider = provider)
+val IbmpPlexSansArabic = FontFamily(
+    Font(R.font.ibm_plex_sans_arabic_regular, FontWeight.Normal),
+    Font(R.font.ibm_plex_sans_arabic_medium, FontWeight.Medium),
+    Font(R.font.ibm_plex_sans_arabic_semibold, FontWeight.SemiBold),
+    Font(R.font.ibm_plex_sans_arabic_semibold, FontWeight.Bold)
 )
 
 val defaultPlatformTextStyle = PlatformTextStyle(includeFontPadding = false)
@@ -39,7 +29,7 @@ fun customTextStyle(
     lineHeight: androidx.compose.ui.unit.TextUnit,
     letterSpacing: androidx.compose.ui.unit.TextUnit
 ) = TextStyle(
-    fontFamily = appFontFamily,
+    fontFamily = IbmpPlexSansArabic,
     fontWeight = fontWeight,
     fontSize = fontSize,
     lineHeight = lineHeight,
@@ -65,3 +55,4 @@ val Typography = Typography(
     labelMedium = customTextStyle(FontWeight.Medium, 12.sp, 16.sp, 0.5.sp),
     labelSmall = customTextStyle(FontWeight.Normal, 11.sp, 16.sp, 0.5.sp)
 )
+

@@ -9,11 +9,16 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import com.example.R
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -28,7 +33,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.*
-import androidx.compose.material.icons.automirrored.outlined.ArrowForward
+import androidx.compose.material.icons.automirrored.outlined.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
@@ -38,9 +43,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -51,6 +60,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -69,6 +79,58 @@ fun hasAllPermissions(context: android.content.Context): Boolean {
     return RequiredPermissions.all {
         androidx.core.content.ContextCompat.checkSelfPermission(context, it) == android.content.pm.PackageManager.PERMISSION_GRANTED
     }
+}
+
+fun formatSimName(sim: SimEntry?, slotIndexFallback: Int = 0, isAr: Boolean): String {
+    if (sim == null) {
+        return if (isAr) "الشريحة ${slotIndexFallback + 1}" else "SIM ${slotIndexFallback + 1}"
+    }
+    val slot = sim.slotIndex + 1
+    val dName = sim.displayName.trim()
+    return if (dName.equals("SIM 1", ignoreCase = true) || dName.equals("SIM 2", ignoreCase = true) || dName.startsWith("SIM", ignoreCase = true)) {
+        if (isAr) "الشريحة $slot" else "SIM $slot"
+    } else {
+        "$dName $slot"
+    }
+}
+
+fun formatDisplayDate(raw: String, isAr: Boolean = false): String {
+    if (raw.isBlank()) return ""
+    val slashRegex = Regex("""\b(\d{1,2})/(\d{1,2})/(\d{4})\b""")
+    val slashMatch = slashRegex.find(raw)
+    if (slashMatch != null) {
+        val (d, m, y) = slashMatch.destructured
+        val day = d.padStart(2, '0')
+        val month = m.padStart(2, '0')
+        val timePart = if (raw.contains("•")) {
+            val rawTime = raw.substringAfter("•").trim()
+            // Format time cleanly in LTR so AM/PM doesn't flip before the clock digits in RTL
+            "\u200E • \u200E$rawTime\u200E"
+        } else ""
+        return "\u200E$day/$month/$y$timePart\u200E"
+    }
+
+    val formats = listOf(
+        "MMM dd, yyyy • hh:mm a",
+        "MMM d, yyyy • hh:mm a",
+        "MMM dd, yyyy • HH:mm",
+        "yyyy-MM-dd HH:mm:ss",
+        "yyyy-MM-dd"
+    )
+    for (fmt in formats) {
+        try {
+            val sdf = java.text.SimpleDateFormat(fmt, java.util.Locale.ENGLISH)
+            val parsed = sdf.parse(raw)
+            if (parsed != null) {
+                val outSdf = java.text.SimpleDateFormat("dd/MM/yyyy • hh:mm a", java.util.Locale.ENGLISH)
+                val formatted = outSdf.format(parsed)
+                val dPart = formatted.substringBefore("•").trim()
+                val tPart = formatted.substringAfter("•").trim()
+                return "\u200E$dPart\u200E • \u200E$tPart\u200E"
+            }
+        } catch (e: Exception) { }
+    }
+    return "\u200E$raw\u200E"
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -123,7 +185,7 @@ fun PaymentScreen(
                             onClick = { viewModel.navigateTo(Screen.MAIN) },
                             icon = {
                                 Icon(
-                                    painter = androidx.compose.ui.res.painterResource(id = com.example.R.drawable.ic_send_money),
+                                    imageVector = Icons.AutoMirrored.Outlined.Send,
                                     contentDescription = "Pay",
                                     modifier = Modifier.size(24.dp)
                                 )
@@ -143,12 +205,12 @@ fun PaymentScreen(
                             onClick = { viewModel.navigateTo(Screen.HISTORY) },
                             icon = {
                                 Icon(
-                                    imageVector = Icons.Default.History,
-                                    contentDescription = "History",
+                                    imageVector = Icons.Default.ReceiptLong,
+                                    contentDescription = "Transactions",
                                     modifier = Modifier.size(24.dp)
                                 )
                             },
-                            label = { Text(if (isRtl) "السجل" else "History") },
+                            label = { Text(if (isRtl) "الحوالات" else "Transactions") },
                             colors = NavigationBarItemDefaults.colors(
                                 selectedIconColor = MaterialTheme.colorScheme.primary,
                                 selectedTextColor = MaterialTheme.colorScheme.primary,
@@ -191,7 +253,7 @@ fun PaymentScreen(
                 when (state.currentScreen) {
                     Screen.ONBOARDING -> OnboardingScreenContent(viewModel, isRtl)
                     Screen.PHONE_SETUP -> PhoneSetupScreenContent(state, viewModel, isRtl)
-                    Screen.MAIN -> MainScreenContent(state, viewModel, onOpenScanner, isRtl)
+                    Screen.MAIN -> MainScreenContent(state, viewModel, isRtl, onOpenScanner)
                     Screen.HISTORY -> HistoryScreenContent(state, viewModel, isRtl)
                     Screen.SETTINGS -> SettingsScreenContent(state, viewModel, isRtl)
                     Screen.PAYMENT_SUCCESS -> PaymentSuccessScreenContent(state, viewModel, isRtl)
@@ -259,6 +321,8 @@ fun PaymentScreen(
 
                 // --- 1. Confirm Payment Bottom Sheet ---
                 if (state.showConfirmDialog) {
+                    val selectedSim = state.sims.find { it.subscriptionId == state.selectedSimId } ?: state.sims.firstOrNull()
+                    val formattedSim = formatSimName(selectedSim, 0, isRtl)
                     ModalBottomSheet(
                         onDismissRequest = { viewModel.dismissConfirm() },
                         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -269,7 +333,7 @@ fun PaymentScreen(
                         ConfirmPaymentSheetContent(
                             recipient = state.recipient,
                             amount = state.amount,
-                            simName = state.sims.find { it.subscriptionId == state.selectedSimId }?.displayName ?: "SIM 1",
+                            simName = formattedSim,
                             isLoading = state.isConfirmLoading,
                             isAr = isRtl,
                             onConfirm = { 
@@ -309,14 +373,130 @@ fun PaymentScreen(
 }
 
 // ============================================================================
+// REALISTIC 3D TACTILE BUTTON (Nikolai Lehbrink physical lighting & shadow model)
+// ============================================================================
+@Composable
+fun RealisticButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    isLoading: Boolean = false,
+    enabled: Boolean = true,
+    shape: androidx.compose.ui.graphics.Shape = RoundedCornerShape(16.dp),
+    baseColor: Color = MaterialTheme.colorScheme.primary,
+    borderColor: Color = Color(0xFF1B5E20),
+    contentColor: Color = MaterialTheme.colorScheme.onPrimary
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+
+    // 1. Precise animations with 150ms FastOutSlowInEasing matching the CSS transition
+    val colorAnimSpec = tween<Color>(durationMillis = 150, easing = FastOutSlowInEasing)
+
+    // Background color shifts darker on press
+    val currentBgColor by animateColorAsState(
+        targetValue = if (isPressed) baseColor.copy(alpha = 0.88f).compositeOver(Color.Black) else baseColor,
+        animationSpec = colorAnimSpec,
+        label = "realistic_btn_bg"
+    )
+
+    // Inset top highlight line shifts from bright to subtle on press
+    val currentInsetTop by animateColorAsState(
+        targetValue = if (isPressed) Color.White.copy(alpha = 0.15f) else Color.White.copy(alpha = 0.45f),
+        animationSpec = colorAnimSpec,
+        label = "realistic_btn_inset"
+    )
+
+    // Outer elevation drops flat on press (4dp -> 0dp)
+    val elevation by animateDpAsState(
+        targetValue = if (isPressed) 0.dp else 4.dp,
+        animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing),
+        label = "realistic_btn_elevation"
+    )
+
+    Box(
+        modifier = modifier
+            .shadow(
+                elevation = if (enabled) elevation else 0.dp,
+                shape = shape,
+                spotColor = Color.Black.copy(alpha = 0.3f),
+                ambientColor = Color.Black.copy(alpha = 0.2f)
+            )
+            .border(width = 1.dp, color = if (enabled) borderColor else Color.Transparent, shape = shape)
+            .clip(shape)
+            .background(if (enabled) currentBgColor else baseColor.copy(alpha = 0.38f))
+            .drawWithContent {
+                drawContent()
+                if (enabled) {
+                    // Simulated overhead diffuse lighting (white 18% to transparent)
+                    drawRect(
+                        brush = Brush.verticalGradient(
+                            colors = listOf(
+                                Color.White.copy(alpha = 0.20f),
+                                Color.Transparent
+                            )
+                        )
+                    )
+
+                    // Simulated CSS inset shadow (1px highlight on the top edge)
+                    drawLine(
+                        color = currentInsetTop,
+                        start = Offset(0f, 0f),
+                        end = Offset(size.width, 0f),
+                        strokeWidth = 2.dp.toPx()
+                    )
+                }
+            }
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                enabled = enabled && !isLoading,
+                onClick = onClick
+            )
+            .padding(horizontal = 20.dp, vertical = 14.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        if (isLoading) {
+            CircularProgressIndicator(
+                color = contentColor,
+                strokeWidth = 2.5.dp,
+                modifier = Modifier.size(22.dp)
+            )
+        } else {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    text = text,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = contentColor
+                )
+                if (icon != null) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = contentColor,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
 // 1. MAIN SCREEN CONTENT
 // ============================================================================
 @Composable
 fun MainScreenContent(
     state: UiState,
     viewModel: MainViewModel,
-    onOpenScanner: () -> Unit,
-    isAr: Boolean
+    isAr: Boolean,
+    onOpenScanner: () -> Unit
 ) {
     val context = LocalContext.current
     var pendingRefresh by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
@@ -355,7 +535,7 @@ fun MainScreenContent(
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    text = if (isAr) "محفظة USSD" else "USSD Wallet",
+                    text = if (isAr) "جوال باي" else "Jawwal Pay",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -423,21 +603,99 @@ fun MainScreenContent(
                     }
                     .padding(20.dp)
             ) {
-                Column(
-                    modifier = Modifier.align(Alignment.TopStart).padding(top = 0.dp)
-                ) {
-                    Text(
-                        text = if (isAr) "الرصيد الحالي" else "Current Balance",
-                        color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.75f),
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Spacer(modifier = Modifier.height(32.dp))
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    // Top row: Label and Refresh button aligned perfectly on center vertical axis
                     Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = if (state.balanceResult.isEmpty()) "••••" else state.balanceResult,
+                            text = if (isAr) "الرصيد الحالي" else "Current Balance",
+                            color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+
+                        // Refresh Button wrapped in Box for corner badge
+                        Box {
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.18f)),
+                                shape = RoundedCornerShape(20.dp),
+                                modifier = Modifier
+                                    .clickable {
+                                        if (hasAllPermissions(context)) {
+                                            viewModel.checkBalance(context)
+                                        } else {
+                                            pendingRefresh = true
+                                            permissionLauncher.launch(RequiredPermissions)
+                                        }
+                                    }
+                                    .testTag("refresh_balance_btn")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    if (state.isBalanceLoading) {
+                                        CircularProgressIndicator(
+                                            color = MaterialTheme.colorScheme.onPrimary,
+                                            strokeWidth = 2.dp,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = Icons.Default.Refresh,
+                                            contentDescription = "Refresh",
+                                            tint = MaterialTheme.colorScheme.onPrimary,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                    Text(
+                                        text = if (isAr) "تحديث" else "Refresh",
+                                        color = MaterialTheme.colorScheme.onPrimary,
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+
+                            if (state.showUpdateBadge) {
+                                val badgeAlignment = if (isAr) Alignment.TopStart else Alignment.TopEnd
+                                Box(
+                                    modifier = Modifier
+                                        .align(badgeAlignment)
+                                        .offset(
+                                            x = if (isAr) (-4).dp else 4.dp,
+                                            y = (-4).dp
+                                        )
+                                        .size(16.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFFFBC02D)), // High contrast yellow-gold
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "!",
+                                        color = Color.Black,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp,
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(18.dp))
+
+                    // Amount display (respects hideBalance toggle)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        val displayAmount = if (state.hideBalance || state.balanceResult.isEmpty()) "••••" else state.balanceResult
+                        Text(
+                            text = displayAmount,
                             style = MaterialTheme.typography.displayMedium,
                             color = MaterialTheme.colorScheme.onPrimary,
                             fontWeight = FontWeight.Bold,
@@ -450,77 +708,6 @@ fun MainScreenContent(
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.9f)
                         )
-                    }
-                }
-
-                // Refresh Button wrapped in Box for corner badge
-                Box(
-                    modifier = Modifier.align(Alignment.TopEnd)
-                ) {
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.18f)),
-                        shape = RoundedCornerShape(20.dp),
-                        modifier = Modifier
-                            .clickable {
-                                if (hasAllPermissions(context)) {
-                                    viewModel.checkBalance(context)
-                                } else {
-                                    pendingRefresh = true
-                                    permissionLauncher.launch(RequiredPermissions)
-                                }
-                            }
-                            .testTag("refresh_balance_btn")
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            if (state.isBalanceLoading) {
-                                CircularProgressIndicator(
-                                    color = MaterialTheme.colorScheme.onPrimary,
-                                    strokeWidth = 2.dp,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            } else {
-                                Icon(
-                                    imageVector = Icons.Default.Refresh,
-                                    contentDescription = "Refresh",
-                                    tint = MaterialTheme.colorScheme.onPrimary,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
-                            Text(
-                                text = if (isAr) "تحديث" else "Refresh",
-                                color = MaterialTheme.colorScheme.onPrimary,
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-
-                    if (state.showUpdateBadge) {
-                        val badgeAlignment = if (isAr) Alignment.TopStart else Alignment.TopEnd
-                        Box(
-                            modifier = Modifier
-                                .align(badgeAlignment)
-                                .offset(
-                                    x = if (isAr) (-4).dp else 4.dp,
-                                    y = (-4).dp
-                                )
-                                .size(16.dp)
-                                .clip(CircleShape)
-                                .background(Color(0xFFFBC02D)), // High contrast yellow-gold
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "!",
-                                color = Color.Black,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 11.sp,
-                                style = MaterialTheme.typography.labelSmall
-                            )
-                        }
                     }
                 }
             }
@@ -547,16 +734,17 @@ fun MainScreenContent(
                     .background(Color.Transparent), // Neutral inactive background
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // If sims list is empty, display dummy active dual buttons
+                // If sims list is empty, display fallback dual buttons
                 val activeSims = if (state.sims.isEmpty()) {
                     listOf(
-                        SimEntry(1, 0, "SIM 1"),
-                        SimEntry(2, 1, "SIM 2")
+                        SimEntry(1, 0, if (isAr) "الشريحة 1" else "SIM 1"),
+                        SimEntry(2, 1, if (isAr) "الشريحة 2" else "SIM 2")
                     )
                 } else state.sims
 
                 activeSims.forEachIndexed { idx, sim ->
                     val isSelected = (state.selectedSimId == sim.subscriptionId) || (state.selectedSimId == null && idx == 0)
+                    val simLabel = formatSimName(sim, idx, isAr)
                     Box(
                         modifier = Modifier
                             .weight(1f)
@@ -567,21 +755,12 @@ fun MainScreenContent(
                             .clickable { viewModel.selectSim(sim.subscriptionId) },
                         contentAlignment = Alignment.Center
                     ) {
-                        Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.Center) {
-                            Text(
-                                text = sim.displayName,
-                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                            Text(
-                                text = "${idx + 1}",
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(start = 2.dp)
-                            )
-                        }
+                        Text(
+                            text = simLabel,
+                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
                     }
                     if (idx < activeSims.lastIndex) {
                         VerticalDivider(
@@ -638,14 +817,17 @@ fun MainScreenContent(
                             .clip(RoundedCornerShape(0.dp))
                             .background(if (state.paymentType == PaymentType.FRIEND) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
                             .clickable { viewModel.updatePaymentType(PaymentType.FRIEND) }
-                            .padding(horizontal = 14.dp),
+                            .padding(horizontal = 12.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
                             text = if (isAr) "صديق" else "Friend",
                             color = if (state.paymentType == PaymentType.FRIEND) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Clip
                         )
                     }
                     Box(
@@ -654,14 +836,17 @@ fun MainScreenContent(
                             .clip(RoundedCornerShape(0.dp))
                             .background(if (state.paymentType == PaymentType.MERCHANT) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
                             .clickable { viewModel.updatePaymentType(PaymentType.MERCHANT) }
-                            .padding(horizontal = 14.dp),
+                            .padding(horizontal = 12.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
                             text = if (isAr) "تاجر" else "Merchant",
                             color = if (state.paymentType == PaymentType.MERCHANT) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Clip
                         )
                     }
                 }
@@ -690,15 +875,21 @@ fun MainScreenContent(
                     )
                 },
                 trailingIcon = {
-                    Row {
-                        IconButton(onClick = { contactPickerLauncher.launch(null) }) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(
+                            onClick = { contactPickerLauncher.launch(null) },
+                            modifier = Modifier.testTag("contact_picker_btn")
+                        ) {
                             Icon(
                                 imageVector = Icons.Default.PermContactCalendar,
                                 contentDescription = "Pick Contact",
                                 tint = if (isRecipientError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                             )
                         }
-                        IconButton(onClick = onOpenScanner) {
+                        IconButton(
+                            onClick = onOpenScanner,
+                            modifier = Modifier.testTag("scan_qr_btn")
+                        ) {
                             Icon(
                                 imageVector = Icons.Default.QrCodeScanner,
                                 contentDescription = "Scan QR",
@@ -744,15 +935,13 @@ fun MainScreenContent(
                 color = MaterialTheme.colorScheme.onSurface
             )
 
-            
-
             TextField(
                 value = state.amount,
                 onValueChange = { viewModel.updateAmount(it) },
                 modifier = Modifier.fillMaxWidth().testTag("transfer_amount_input"),
                 placeholder = {
                     Text(
-                        text = "0.00",
+                        text = "0",
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -784,7 +973,7 @@ fun MainScreenContent(
                     focusedTextColor = MaterialTheme.colorScheme.onSurface,
                     unfocusedTextColor = MaterialTheme.colorScheme.onSurface
                 ),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Next),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next),
                 keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(androidx.compose.ui.focus.FocusDirection.Down) })
             )
 
@@ -873,35 +1062,20 @@ fun MainScreenContent(
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        // Primary Pay Now Button Action
-        Button(
+        // Primary Pay Now Button Action (Realistic Tactile Button)
+        RealisticButton(
+            text = if (isAr) "ادفع الآن" else "Pay now",
+            icon = Icons.AutoMirrored.Filled.Send,
             onClick = { viewModel.requestPay(context) },
+            isLoading = state.isConfirmLoading,
             modifier = Modifier
                 .fillMaxWidth()
                 .height(56.dp)
                 .testTag("pay_now_button"),
-            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-            shape = RoundedCornerShape(16.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center
-            ) {
-                Text(
-                    text = if (isAr) "ادفع الآن" else "Pay now",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onPrimary
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.Send,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-        }
+            baseColor = MaterialTheme.colorScheme.primary,
+            borderColor = Color(0xFF1B5E20),
+            contentColor = MaterialTheme.colorScheme.onPrimary
+        )
 
         Spacer(modifier = Modifier.height(24.dp))
 
@@ -913,6 +1087,9 @@ fun MainScreenContent(
             textAlign = TextAlign.Center,
             lineHeight = 16.sp
         )
+
+        // Spacing at bottom of form
+        Spacer(modifier = Modifier.height(32.dp))
     }
 }
 
@@ -956,19 +1133,12 @@ fun HistoryScreenContent(
                 )
             }
             Spacer(modifier = Modifier.width(8.dp))
-            Column {
-                Text(
-                    text = if (isAr) "السجل" else "History",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = if (isAr) "معاملات المحفظة" else "Wallet Transactions",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+            Text(
+                text = if (isAr) "الحوالات" else "Transactions",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
         }
 
         // Horizontal filter bar (Tabs)
@@ -1143,12 +1313,17 @@ fun HistoryScreenContent(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = item.timestamp,
+                                    text = formatDisplayDate(item.timestamp, isAr),
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     style = MaterialTheme.typography.bodySmall
                                 )
+                                val displayedSim = if (isAr && item.simName.startsWith("SIM ")) {
+                                    "الشريحة ${item.simName.substringAfter("SIM ")}"
+                                } else {
+                                    item.simName
+                                }
                                 Text(
-                                    text = item.simName,
+                                    text = displayedSim,
                                     color = MaterialTheme.colorScheme.primary,
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = FontWeight.Bold
@@ -1253,7 +1428,7 @@ fun SettingsScreenContent(
         // SIM MANAGEMENT SECTION
         Column(modifier = Modifier.fillMaxWidth()) {
             Text(
-                text = if (isAr) "إدارة الشرائح" else "SIM MANAGEMENT",
+                text = if (isAr) "إدارة الشرائح" else "SIM Management",
                 color = MaterialTheme.colorScheme.primary,
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.Bold,
@@ -1277,6 +1452,8 @@ fun SettingsScreenContent(
                     } else {
                         state.sims.forEachIndexed { index, sim ->
                             val isActive = state.selectedSimId == sim.subscriptionId
+                            val statusLabel = if (isActive) (if (isAr) "نشطة" else "Active") else (if (isAr) "متاحة" else "Ready")
+                            val simTitle = if (isAr) "الشريحة ${index + 1}" else "SIM ${index + 1}"
                             Row(
                                 modifier = Modifier.fillMaxWidth().clickable { viewModel.selectSim(sim.subscriptionId) },
                                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1290,10 +1467,10 @@ fun SettingsScreenContent(
                                     )
                                     Spacer(modifier = Modifier.width(12.dp))
                                     Column(modifier = Modifier.fillMaxWidth()) {
-                                        Text(text = "SIM ${index + 1}", fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface)
+                                        Text(text = simTitle, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface)
                                         Row(verticalAlignment = Alignment.CenterVertically) {
                                             Text(
-                                                text = "${sim.displayName} • ${if (isActive) "Active" else "Ready"}", 
+                                                text = "${sim.displayName} • $statusLabel", 
                                                 style = MaterialTheme.typography.bodySmall, 
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                                 maxLines = 1,
@@ -1343,10 +1520,10 @@ fun SettingsScreenContent(
 
         Spacer(modifier = Modifier.height(20.dp))
 
-        // SECURITY & PREFERENCES
+        // PREFERENCES & PRIVACY
         Column(modifier = Modifier.fillMaxWidth()) {
             Text(
-                text = if (isAr) "الأمان والخيارات" else "SECURITY & PREFERENCES",
+                text = if (isAr) "التفضيلات والخصوصية" else "Preferences & Privacy",
                 color = MaterialTheme.colorScheme.primary,
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.Bold,
@@ -1456,10 +1633,12 @@ fun SettingsScreenContent(
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
-                                    text = "EN",
+                                    text = "English",
                                     color = if (!isAr) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
                                     fontWeight = FontWeight.Medium,
-                                    fontSize = 12.sp
+                                    fontSize = 12.sp,
+                                    maxLines = 1,
+                                    softWrap = false
                                 )
                             }
                             Box(
@@ -1472,18 +1651,87 @@ fun SettingsScreenContent(
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
-                                    text = "AR",
+                                    text = "العربية",
                                     color = if (isAr) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
                                     fontWeight = FontWeight.Medium,
-                                    fontSize = 12.sp
+                                    fontSize = 12.sp,
+                                    maxLines = 1,
+                                    softWrap = false
                                 )
                             }
                         }
                     }
 
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.padding(vertical = 12.dp))
-                    
-                    // Item: Privacy Policy link
+
+                    // Item 3: Balance Status (Show / Hide)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = if (state.hideBalance) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(
+                                text = if (isAr) "حالة الرصيد" else "Balance Status",
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha=0.5f), CircleShape)
+                                .background(MaterialTheme.colorScheme.surface)
+                                .height(32.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .clip(RoundedCornerShape(0.dp))
+                                    .background(if (!state.hideBalance) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
+                                    .clickable { viewModel.setHideBalance(false) }
+                                    .padding(horizontal = 14.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = if (isAr) "إظهار" else "Show",
+                                    color = if (!state.hideBalance) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontWeight = FontWeight.Medium,
+                                    fontSize = 12.sp,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .clip(RoundedCornerShape(0.dp))
+                                    .background(if (state.hideBalance) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
+                                    .clickable { viewModel.setHideBalance(true) }
+                                    .padding(horizontal = 14.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = if (isAr) "إخفاء" else "Hide",
+                                    color = if (state.hideBalance) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontWeight = FontWeight.Medium,
+                                    fontSize = 12.sp,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.padding(vertical = 12.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth().clickable(interactionSource = androidx.compose.runtime.remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null) { viewModel.navigateTo(Screen.PRIVACY_POLICY) },
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -2109,7 +2357,7 @@ fun ConfirmPaymentSheetContent(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "SIM",
+                        text = if (isAr) "الشريحة" else "SIM",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodyMedium
                     )
@@ -2432,13 +2680,11 @@ fun OnboardingScreenContent(viewModel: MainViewModel, isAr: Boolean) {
             textAlign = TextAlign.Center
         )
         Spacer(modifier = Modifier.height(32.dp))
-        Button(
+        RealisticButton(
+            text = if (isAr) "موافق ومتابعة" else "Agree and Continue",
             onClick = { viewModel.completeOnboarding() },
-            modifier = Modifier.fillMaxWidth().height(56.dp),
-            shape = RoundedCornerShape(16.dp)
-        ) {
-            Text(if (isAr) "موافق ومتابعة" else "Agree and Continue", fontWeight = FontWeight.Bold)
-        }
+            modifier = Modifier.fillMaxWidth().height(56.dp)
+        )
     }
 }
 
@@ -2557,9 +2803,9 @@ fun PhoneSetupScreenContent(state: UiState, viewModel: MainViewModel, isAr: Bool
         verticalArrangement = Arrangement.Center
     ) {
         Icon(
-            imageVector = Icons.Outlined.Person,
+            imageVector = Icons.Outlined.PhoneAndroid,
             contentDescription = null,
-            modifier = Modifier.size(80.dp),
+            modifier = Modifier.size(72.dp),
             tint = MaterialTheme.colorScheme.primary
         )
         Spacer(modifier = Modifier.height(24.dp))
@@ -2571,7 +2817,7 @@ fun PhoneSetupScreenContent(state: UiState, viewModel: MainViewModel, isAr: Bool
         )
         Spacer(modifier = Modifier.height(16.dp))
         Text(
-            text = if (isAr) "أدخل رقم هاتفك لتسهيل إنشاء رمز QR خاص بك. يمكنك تخطي هذه الخطوة." else "Enter your phone number to generate your QR code easily. You can skip this step.",
+            text = if (isAr) "أدخل رقم هاتفك لتسهيل إنشاء رمز QR خاص بك. يمكنك تخطي هذه الخطوة." else "Enter your phone number to generate your personal QR code easily. You can skip this step anytime.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center
@@ -2582,31 +2828,41 @@ fun PhoneSetupScreenContent(state: UiState, viewModel: MainViewModel, isAr: Bool
             value = state.selfPhone,
             onValueChange = { viewModel.setSelfPhone(it) },
             label = { Text(if (isAr) "رقم هاتفك" else "Your Phone Number") },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Outlined.Call,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            },
+            placeholder = {
+                Text(
+                    text = "05X XXXXXXX",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                )
+            },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone, imeAction = ImeAction.Done),
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
             colors = OutlinedTextFieldDefaults.colors(
-                focusedContainerColor = MaterialTheme.colorScheme.surfaceContainer,
-                unfocusedContainerColor = Color.Transparent
+                focusedContainerColor = Color.Transparent,
+                unfocusedContainerColor = Color.Transparent,
+                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
             ),
-            shape = RoundedCornerShape(24.dp)
+            shape = RoundedCornerShape(12.dp)
         )
         
         Spacer(modifier = Modifier.height(32.dp))
         
-        Button(
+        RealisticButton(
+            text = if (isAr) "متابعة" else "Continue",
             onClick = { viewModel.navigateTo(Screen.MAIN) },
             modifier = Modifier
                 .fillMaxWidth()
-                .height(56.dp),
-            shape = RoundedCornerShape(16.dp)
-        ) {
-            Text(
-                text = if (isAr) "متابعة" else "Continue",
-                fontWeight = FontWeight.Bold,
-                style = MaterialTheme.typography.titleMedium
-            )
-        }
+                .height(56.dp)
+        )
         
         Spacer(modifier = Modifier.height(16.dp))
         

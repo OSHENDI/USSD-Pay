@@ -7,6 +7,11 @@ class PrefsManager(context: Context) {
     private val prefs: SharedPreferences = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
 
     fun getLanguage(): AppLanguage {
+        if (!prefs.contains("app_language")) {
+            val defaultLang = if (java.util.Locale.getDefault().language.startsWith("ar")) AppLanguage.AR else AppLanguage.EN
+            setLanguage(defaultLang)
+            return defaultLang
+        }
         val langStr = prefs.getString("app_language", AppLanguage.AR.name) ?: AppLanguage.AR.name
         return try {
             AppLanguage.valueOf(langStr)
@@ -17,6 +22,14 @@ class PrefsManager(context: Context) {
 
     fun setLanguage(lang: AppLanguage) {
         prefs.edit().putString("app_language", lang.name).apply()
+    }
+
+    fun getHideBalance(): Boolean {
+        return prefs.getBoolean("hide_balance", false)
+    }
+
+    fun setHideBalance(hide: Boolean) {
+        prefs.edit().putBoolean("hide_balance", hide).apply()
     }
 
     fun getIsDarkMode(): Boolean {

@@ -297,6 +297,11 @@ fun QrScannerScreen(onClose: () -> Unit, onQrCodeScanned: (String) -> Unit) {
         }
 
         // Center visual guidelines text
+        val isArabic = remember {
+            val prefs = PrefsManager(context)
+            prefs.getLanguage() == AppLanguage.AR
+        }
+
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -305,7 +310,7 @@ fun QrScannerScreen(onClose: () -> Unit, onQrCodeScanned: (String) -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = "Align QR Code inside frame",
+                text = if (isArabic) "وجّه الكاميرا نحو الرمز" else "Point camera at QR code",
                 fontSize = 16.sp,
                 color = Color.White,
                 fontWeight = FontWeight.Medium

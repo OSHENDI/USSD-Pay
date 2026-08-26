@@ -35,6 +35,7 @@ data class UiState(
     val isBalanceLoading: Boolean = false,
     val isConfirmLoading: Boolean = false,
     val showUpdateBadge: Boolean = false,
-    val isDarkMode: Boolean = false
+    val isDarkMode: Boolean = false,
+    val hideBalance: Boolean = false
 )
 
