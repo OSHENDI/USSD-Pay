@@ -8,6 +8,16 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.telephony.TelephonyManager
+import kotlin.coroutines.resume
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+
+sealed class UssdExecutionResult {
+    data class Success(val rawResponse: String) : UssdExecutionResult()
+    data class Failure(val failureCode: Int, val message: String) : UssdExecutionResult()
+}
 
 object UssdManager {
 
@@ -40,7 +50,7 @@ object UssdManager {
     fun buildPaymentString(paymentType: PaymentType, pin: String, phone: String, amount: String): String {
         val normalized = normalizePhone(phone)
         val typeCode = if (paymentType == PaymentType.FRIEND) "1" else "2"
-        return "*110*$typeCode*$pin*$normalized*$amount*1#"
+        return "*268*$typeCode*$normalized*$amount*$pin#"
     }
 
     fun buildBalanceString(): String {
@@ -111,13 +121,12 @@ object UssdManager {
     }
 
     @SuppressLint("MissingPermission")
-    fun sendUssd(
+    suspend fun executeUssd(
         context: Context,
         ussdCode: String,
         subscriptionId: Int?,
-        onResponse: (String) -> Unit,
-        onError: (String) -> Unit
-    ) {
+        isAr: Boolean
+    ): UssdExecutionResult = suspendCancellableCoroutine { continuation ->
         val mainHandler = Handler(Looper.getMainLooper())
         
         if (subscriptionId != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -131,7 +140,9 @@ object UssdManager {
                         request: String?,
                         response: CharSequence?
                     ) {
-                        onResponse(response?.toString() ?: "")
+                        if (continuation.isActive) {
+                            continuation.resume(UssdExecutionResult.Success(response?.toString() ?: ""))
+                        }
                     }
 
                     override fun onReceiveUssdResponseFailed(
@@ -139,15 +150,20 @@ object UssdManager {
                         request: String?,
                         failureCode: Int
                     ) {
-                        val errorMsg = when (failureCode) {
-                            -1 -> "USSD request failed. Please check the recipient number, PIN, and your balance, then try again."
-                            else -> "USSD failed (code $failureCode). Check SIM and signal."
+                        if (continuation.isActive) {
+                            val errorMsg = when (failureCode) {
+                                -1 -> if (isAr) "يرجى التحقق من رقم المستلم ورمز PIN والرصيد ثم حاول مرة أخرى." else "USSD request failed. Please check the recipient number, PIN, and your balance, then try again."
+                                else -> if (isAr) "فشل USSD (رمز $failureCode). تحقق من الشريحة والإشارة." else "USSD failed (code $failureCode). Check SIM and signal."
+                            }
+                            continuation.resume(UssdExecutionResult.Failure(failureCode, errorMsg))
                         }
-                        onError(errorMsg)
                     }
                 }, mainHandler)
             } catch (e: Exception) {
-                onError("carrier did not respond. check screen for carrier response.")
+                if (continuation.isActive) {
+                    val errorMsg = if (isAr) "لم تستجب شبكة الاتصال. تحقق من رسائل الشبكة على الشاشة." else "carrier did not respond. check screen for carrier response."
+                    continuation.resume(UssdExecutionResult.Failure(-999, errorMsg))
+                }
             }
         } else {
             // Legacy Call Fallback
@@ -158,10 +174,32 @@ object UssdManager {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 context.startActivity(intent)
-                // Legacy dialing does not receive callback responses
-                onResponse("Sent via legacy carrier launcher. Please view your carrier popup message.")
+                if (continuation.isActive) {
+                    val legacyMsg = if (isAr) "تم الإرسال عبر واجهة الاتصال القديمة. يرجى مراجعة رسالة الشبكة المنبثقة." else "Sent via legacy carrier launcher. Please view your carrier popup message."
+                    continuation.resume(UssdExecutionResult.Success(legacyMsg))
+                }
             } catch (e: Exception) {
-                onError("Permission denied. grant CALL_PHONE permission.")
+                if (continuation.isActive) {
+                    val permMsg = if (isAr) "تم رفض الإذن. يرجى منح إذن CALL_PHONE." else "Permission denied. grant CALL_PHONE permission."
+                    continuation.resume(UssdExecutionResult.Failure(-998, permMsg))
+                }
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun sendUssd(
+        context: Context,
+        ussdCode: String,
+        subscriptionId: Int?,
+        isAr: Boolean,
+        onResponse: (String) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        CoroutineScope(Dispatchers.Main).launch {
+            when (val result = executeUssd(context, ussdCode, subscriptionId, isAr)) {
+                is UssdExecutionResult.Success -> onResponse(result.rawResponse)
+                is UssdExecutionResult.Failure -> onError(result.message)
             }
         }
     }

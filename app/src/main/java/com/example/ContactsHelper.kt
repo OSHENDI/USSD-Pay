@@ -82,4 +82,41 @@ object ContactsHelper {
         }
         return name
     }
+
+    fun getNamesForNumbers(context: Context, numbers: Set<String>): Map<String, String> {
+        val result = mutableMapOf<String, String>()
+        if (numbers.isEmpty()) return result
+        
+        try {
+            val projection = arrayOf(
+                ContactsContract.CommonDataKinds.Phone.NUMBER,
+                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME
+            )
+            
+            context.contentResolver.query(
+                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                projection,
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                val numIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+                val nameIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+                
+                while (cursor.moveToNext()) {
+                    val rawNum = if (numIdx != -1) cursor.getString(numIdx) else null
+                    val name = if (nameIdx != -1) cursor.getString(nameIdx) else null
+                    if (rawNum != null && name != null) {
+                        val n = UssdManager.normalizePhone(rawNum)
+                        if (numbers.contains(n)) {
+                            result[n] = name
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            // Permission denied or other error
+        }
+        return result
+    }
 }

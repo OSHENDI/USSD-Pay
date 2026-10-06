@@ -3,19 +3,11 @@ package com.example.ui.theme
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.unit.sp
 import com.example.R
-
-val IbmpPlexSansArabic = FontFamily(
-    Font(R.font.ibm_plex_sans_arabic_regular, FontWeight.Normal),
-    Font(R.font.ibm_plex_sans_arabic_medium, FontWeight.Medium),
-    Font(R.font.ibm_plex_sans_arabic_semibold, FontWeight.SemiBold),
-    Font(R.font.ibm_plex_sans_arabic_semibold, FontWeight.Bold)
-)
 
 val defaultPlatformTextStyle = PlatformTextStyle(includeFontPadding = false)
 val defaultLineHeightStyle = LineHeightStyle(
@@ -29,7 +21,6 @@ fun customTextStyle(
     lineHeight: androidx.compose.ui.unit.TextUnit,
     letterSpacing: androidx.compose.ui.unit.TextUnit
 ) = TextStyle(
-    fontFamily = IbmpPlexSansArabic,
     fontWeight = fontWeight,
     fontSize = fontSize,
     lineHeight = lineHeight,
@@ -55,4 +46,3 @@ val Typography = Typography(
     labelMedium = customTextStyle(FontWeight.Medium, 12.sp, 16.sp, 0.5.sp),
     labelSmall = customTextStyle(FontWeight.Normal, 11.sp, 16.sp, 0.5.sp)
 )
-

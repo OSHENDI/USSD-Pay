@@ -18,8 +18,8 @@ android {
     applicationId = "com.utiapps.ussdpay"
     minSdk = 23
     targetSdk = 36
-    versionCode = 4
-    versionName = "0.0.0.4"
+    versionCode = 6
+    versionName = "0.0.0.6"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     vectorDrawables.useSupportLibrary = true
@@ -52,7 +52,8 @@ android {
   buildTypes {
     release {
       isCrunchPngs = false
-      isMinifyEnabled = false
+      isMinifyEnabled = true
+      isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       signingConfig = signingConfigs.getByName("release")
     }
@@ -83,7 +84,6 @@ secrets {
 dependencies {
   implementation(platform(libs.androidx.compose.bom))
   implementation(platform(libs.firebase.bom))
-  implementation(libs.androidx.compose.ui.text.google.fonts)
   implementation(libs.androidx.activity.compose)
   implementation(libs.androidx.camera.camera2)
   implementation(libs.androidx.camera.core)
@@ -92,12 +92,14 @@ dependencies {
   implementation(libs.androidx.compose.material.icons.core)
   implementation(libs.androidx.compose.material.icons.extended)
   implementation(libs.androidx.compose.material3)
+  implementation("androidx.biometric:biometric:1.2.0-alpha05")
+  implementation("androidx.security:security-crypto:1.1.0-alpha06")
   implementation("com.google.zxing:core:3.5.3")
   implementation(libs.androidx.compose.ui)
-  implementation(libs.androidx.compose.ui.text.google.fonts)
   implementation(libs.androidx.compose.ui.graphics)
   implementation(libs.androidx.compose.ui.tooling.preview)
   implementation(libs.androidx.core.ktx)
+  implementation(libs.androidx.appcompat)
   implementation(libs.androidx.fragment)
   implementation(libs.androidx.fragment.ktx)
   // implementation(libs.androidx.datastore.preferences)
@@ -138,3 +140,8 @@ dependencies {
   "ksp"(libs.androidx.room.compiler)
   // "ksp"(libs.moshi.kotlin.codegen)
 }
+
+ 
+ 
+ 
+// Trigger emulator sync

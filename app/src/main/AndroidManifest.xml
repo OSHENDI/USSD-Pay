@@ -23,6 +23,7 @@
         
         <activity
             android:name=".MainActivity"
+            android:windowSoftInputMode="adjustResize"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -35,7 +36,6 @@
             android:exported="false"
             android:screenOrientation="unspecified"
             android:theme="@style/Theme.MyApplication" />
-            
     </application>
 
 </manifest>

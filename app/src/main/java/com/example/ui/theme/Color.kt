@@ -3,9 +3,9 @@ package com.example.ui.theme
 import androidx.compose.ui.graphics.Color
 
 // Complete Light Theme Roles (Emerald Botanical/Jawwal Theme)
-val LightPrimary = Color(0xFF2E7D32)
+val LightPrimary = Color(0xFF0B7D4B)
 val LightOnPrimary = Color(0xFFFFFFFF)
-val LightPrimaryContainer = Color(0xFFB7F1B3)
+val LightPrimaryContainer = Color(0xFFE2F6EC)
 val LightOnPrimaryContainer = Color(0xFF002106)
 val LightSecondary = Color(0xFF526350)
 val LightOnSecondary = Color(0xFFFFFFFF)
@@ -29,9 +29,9 @@ val LightErrorContainer = Color(0xFFFFDAD6)
 val LightOnErrorContainer = Color(0xFF410002)
 
 // Complete Dark Theme Roles (Premium Minimalist Dark Mode)
-val DarkPrimary = Color(0xFF81E387)
+val DarkPrimary = Color(0xFF28BA76)
 val DarkOnPrimary = Color(0xFF00390F)
-val DarkPrimaryContainer = Color(0xFF0F521B)
+val DarkPrimaryContainer = Color(0xFF163E2B)
 val DarkOnPrimaryContainer = Color(0xFFB7F1B3)
 val DarkSecondary = Color(0xFFB9CCB5)
 val DarkOnSecondary = Color(0xFF253424)
@@ -55,10 +55,10 @@ val DarkErrorContainer = Color(0xFF93000A)
 val DarkOnErrorContainer = Color(0xFFFFDAD6)
 
 // Surface Container Tokens for custom elevation layouts
-val LightSurfaceContainer = Color(0xFFEBF0EA)
-val LightSurfaceContainerHigh = Color(0xFFE6EAE5)
-val LightSurfaceContainerLow = Color(0xFFF2F5F1)
+val LightSurfaceContainer = Color.White
+val LightSurfaceContainerHigh = Color(0xFFF5F8F5)
+val LightSurfaceContainerLow = Color(0xFFF8FAF7)
 
-val DarkSurfaceContainer = Color(0xFF1D211D)
+val DarkSurfaceContainer = Color(0xFF1C241E)
 val DarkSurfaceContainerHigh = Color(0xFF282B27)
 val DarkSurfaceContainerLow = Color(0xFF191D19)

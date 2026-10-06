@@ -1,9 +1,19 @@
 package com.example
 
+import android.app.Application
 import android.content.Context
 import android.net.Uri
-import androidx.lifecycle.ViewModel
+import android.provider.Settings
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.ContactsRepository
+import com.example.data.DefaultContactsRepository
+import com.example.data.DefaultHistoryRepository
+import com.example.data.DefaultSettingsRepository
+import com.example.data.DefaultTelephonyRepository
+import com.example.data.HistoryRepository
+import com.example.data.SettingsRepository
+import com.example.data.TelephonyRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
@@ -13,40 +23,89 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import com.example.ui.getAppStrings
 
-class MainViewModel : ViewModel() {
+class MainViewModel @JvmOverloads constructor(
+    application: Application,
+    private val telephonyRepo: TelephonyRepository = DefaultTelephonyRepository(application),
+    private val contactsRepo: ContactsRepository = DefaultContactsRepository(application),
+    private val historyRepo: HistoryRepository = DefaultHistoryRepository(application),
+    private val settingsRepo: SettingsRepository = DefaultSettingsRepository(application)
+) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
     private var payJob: Job? = null
     private var balanceJob: Job? = null
-    private var prefsManager: PrefsManager? = null
+    private var historyJob: Job? = null
+    private var coldStartBalanceChecked = false
 
-    fun initialize(context: Context) {
-        if (prefsManager == null) {
-            prefsManager = PrefsManager(context)
-            val lang = prefsManager!!.getLanguage()
-            val isDark = prefsManager!!.getIsDarkMode()
-            val selfPhone = prefsManager!!.getSelfPhone()
-            val savedSimId = prefsManager!!.getSelectedSimId()
-            val balance = prefsManager!!.getBalance()
-            val onboarded = prefsManager!!.isOnboardingCompleted()
-            val hideBal = prefsManager!!.getHideBalance()
-            
-            val initialScreen = if (onboarded) Screen.MAIN else Screen.ONBOARDING
+    init {
+        val lang = settingsRepo.getLanguage()
+        val isDark = settingsRepo.getIsDarkMode()
+        val selfPhone = settingsRepo.getSelfPhone()
+        val savedSimId = settingsRepo.getSelectedSimId()
+        val balance = settingsRepo.getBalance()
+        val onboarded = settingsRepo.isOnboardingCompleted()
+        val hideBal = settingsRepo.getHideBalance()
+        val savedPin = settingsRepo.getSavedPin()
+        val hasSavedPin = settingsRepo.getRememberPin()
+        val lastRefresh = settingsRepo.getLastRefreshTime()
+        val balanceDiff = settingsRepo.getBalanceDifference()
 
-            _uiState.updateState { it.copy(
-                currentScreen = initialScreen,
-                language = lang,
-                isAr = lang == AppLanguage.AR,
-                isDarkMode = isDark,
-                selfPhone = selfPhone,
-                balanceResult = balance,
-                selectedSimId = if (savedSimId != -1) savedSimId else null,
-                hideBalance = hideBal
-            ) }
+        val initialScreen = if (onboarded) Screen.MAIN else Screen.ONBOARDING
+
+        _uiState.updateState { it.copy(
+            currentScreen = initialScreen,
+            language = lang,
+            isAr = lang == AppLanguage.AR,
+            isDarkMode = isDark,
+            selfPhone = selfPhone,
+            balanceResult = balance,
+            balanceDifference = balanceDiff,
+            selectedSimId = if (savedSimId != -1) savedSimId else null,
+            hideBalance = hideBal,
+            secretCode = savedPin,
+            rememberPin = hasSavedPin,
+            lastRefreshTime = lastRefresh
+        ) }
+
+        observeHistoryInternal()
+    }
+
+    private fun observeHistoryInternal() {
+        if (historyJob == null) {
+            historyJob = viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    historyRepo.observeHistory().collect { rawItems ->
+                        val missingNameNumbers = rawItems.filter { it.name.isBlank() }.map { it.number }.toSet()
+                        val resolvedNames = if (missingNameNumbers.isNotEmpty()) {
+                            contactsRepo.getNamesForNumbers(missingNameNumbers)
+                        } else {
+                            emptyMap()
+                        }
+                        val items = rawItems.map { entry ->
+                            if (entry.name.isBlank()) {
+                                val contactName = resolvedNames[entry.number]
+                                if (contactName != null) entry.copy(name = contactName) else entry
+                            } else {
+                                entry
+                            }
+                        }
+                        withContext(Dispatchers.Main) {
+                            _uiState.updateState { it.copy(history = items) }
+                        }
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("MainViewModel", "Error observing history", e)
+                }
+            }
         }
+    }
+
+    fun initialize(context: Context? = null) {
+        // Handled automatically in init block; safe no-op for backward compatibility
     }
 
     private inline fun <T> MutableStateFlow<T>.updateState(newVal: (T) -> T) {
@@ -57,77 +116,51 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    fun loadSims(context: Context) {
+    fun loadSims(context: Context? = null) {
         try {
-            val sm = context.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as? android.telephony.SubscriptionManager
-            if (sm == null) return
-            val list = sm.activeSubscriptionInfoList
-            var detectedPhoneForSelf: String? = null
-            val mapped = list?.map { info ->
-                var phoneNumber: String? = null
-                try {
-                    @Suppress("DEPRECATION")
-                    phoneNumber = info.number
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                        try {
-                            phoneNumber = sm.getPhoneNumber(info.subscriptionId)
-                        } catch (e: Exception) {}
-                    }
-                    if (phoneNumber != null) {
-                        val norm = UssdManager.normalizePhone(phoneNumber)
-                        if (norm.length == 10 && norm.startsWith("05")) {
-                            phoneNumber = norm
-                            if (detectedPhoneForSelf == null) {
-                                detectedPhoneForSelf = norm
-                            }
-                        } else {
-                            phoneNumber = null
-                        }
-                    }
-                } catch (e: Exception) { }
-
-                SimEntry(
-                    subscriptionId = info.subscriptionId,
-                    slotIndex = info.simSlotIndex,
-                    displayName = info.displayName?.toString() ?: "SIM ${info.simSlotIndex + 1}",
-                    phoneNumber = phoneNumber
-                )
-            } ?: emptyList()
+            val mapped = telephonyRepo.getActiveSims()
             _uiState.updateState { state ->
                 val newSelectedSim = if (state.selectedSimId != null && mapped.any { it.subscriptionId == state.selectedSimId }) {
                     state.selectedSimId
                 } else {
-                    val saved = prefsManager?.getSelectedSimId() ?: -1
+                    val saved = settingsRepo.getSelectedSimId()
                     if (saved != -1 && mapped.any { it.subscriptionId == saved }) saved else mapped.firstOrNull()?.subscriptionId
                 }
-                val autoSelfPhone = if (state.selfPhone.isEmpty() && detectedPhoneForSelf != null) {
-                    prefsManager?.setSelfPhone(detectedPhoneForSelf)
-                    detectedPhoneForSelf
+                val autoSelfPhone = if (state.selfPhone.isEmpty()) {
+                    val detected = mapped.firstOrNull { it.phoneNumber != null }?.phoneNumber
+                    if (detected != null) {
+                        settingsRepo.setSelfPhone(detected)
+                        detected
+                    } else state.selfPhone
                 } else state.selfPhone
+
                 state.copy(
                     sims = mapped,
                     selectedSimId = newSelectedSim,
                     selfPhone = autoSelfPhone
                 )
             }
-        } catch (e: SecurityException) {
-            // Permission not granted yet
-        } catch (t: Throwable) {
-            t.printStackTrace()
-        }
+        } catch (_: Exception) {}
     }
 
-    fun selectSim(subscriptionId: Int) {
-        prefsManager?.setSelectedSimId(subscriptionId)
-        _uiState.updateState { it.copy(selectedSimId = subscriptionId) }
+    fun selectSim(simId: Int) {
+        settingsRepo.setSelectedSimId(simId)
+        _uiState.updateState { it.copy(selectedSimId = simId) }
     }
 
-    fun loadHistory(context: Context) {
-        val resolverContext = context.applicationContext
+    fun loadHistory(context: Context? = null) {
         viewModelScope.launch(Dispatchers.IO) {
-            val items = HistoryManager(resolverContext).getHistory().map { entry ->
+            val rawItems = historyRepo.getHistory()
+            val missingNameNumbers = rawItems.filter { it.name.isBlank() }.map { it.number }.toSet()
+            val resolvedNames = if (missingNameNumbers.isNotEmpty()) {
+                contactsRepo.getNamesForNumbers(missingNameNumbers)
+            } else {
+                emptyMap()
+            }
+
+            val items = rawItems.map { entry ->
                 if (entry.name.isBlank()) {
-                    val contactName = ContactsHelper.lookupName(resolverContext, entry.number)
+                    val contactName = resolvedNames[entry.number]
                     if (contactName != null) {
                         entry.copy(name = contactName)
                     } else {
@@ -143,14 +176,13 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    fun updateRecipient(phone: String, context: Context) {
+    fun updateRecipient(phone: String, context: Context? = null) {
         val normalized = UssdManager.normalizePhone(phone)
-        
+
         if (normalized.length == 10) {
             _uiState.updateState { it.copy(recipient = normalized) }
-            val resolverContext = context.applicationContext
             viewModelScope.launch(Dispatchers.IO) {
-                val displayName = ContactsHelper.lookupName(resolverContext, normalized) ?: ""
+                val displayName = contactsRepo.lookupName(normalized) ?: ""
                 withContext(Dispatchers.Main) {
                     _uiState.updateState { it.copy(recipientName = displayName) }
                 }
@@ -160,17 +192,17 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    private var coldStartBalanceChecked = false
-
-    fun checkBalanceOnColdStart(context: Context) {
+    fun checkBalanceOnColdStart(context: Context? = null) {
         if (coldStartBalanceChecked) return
         coldStartBalanceChecked = true
-        checkBalance(context)
+        checkBalance()
     }
 
     fun updateAmount(amountVal: String) {
         val digits = amountVal.filter { it.isDigit() }
-        _uiState.updateState { it.copy(amount = digits) }
+        val num = digits.toLongOrNull() ?: 0L
+        val capped = if (num > 12000L) "12000" else digits
+        _uiState.updateState { it.copy(amount = capped) }
     }
 
     fun updatePaymentType(type: PaymentType) {
@@ -183,10 +215,31 @@ class MainViewModel : ViewModel() {
         }
     }
 
+    fun getSavedPin(): String = settingsRepo.getSavedPin()
+
+    fun applySavedPin(): Boolean {
+        val saved = settingsRepo.getSavedPin()
+        if (saved.length == 4) {
+            setSecretCode(saved)
+            return true
+        }
+        return false
+    }
+
+    fun setRememberPin(remember: Boolean) {
+        _uiState.updateState { it.copy(rememberPin = remember) }
+        settingsRepo.setRememberPin(remember)
+        if (!remember) {
+            settingsRepo.savePin("")
+        } else if (_uiState.value.secretCode.length == 4) {
+            settingsRepo.savePin(_uiState.value.secretCode)
+        }
+    }
+
     fun toggleLanguage() {
         _uiState.updateState { state ->
             val newLang = if (state.language == AppLanguage.EN) AppLanguage.AR else AppLanguage.EN
-            prefsManager?.setLanguage(newLang)
+            settingsRepo.setLanguage(newLang)
             state.copy(
                 language = newLang,
                 isAr = newLang == AppLanguage.AR
@@ -195,18 +248,18 @@ class MainViewModel : ViewModel() {
     }
 
     fun setDarkMode(enabled: Boolean) {
-        prefsManager?.setIsDarkMode(enabled)
+        settingsRepo.setIsDarkMode(enabled)
         _uiState.updateState { it.copy(isDarkMode = enabled) }
     }
 
     fun setHideBalance(hide: Boolean) {
-        prefsManager?.setHideBalance(hide)
+        settingsRepo.setHideBalance(hide)
         _uiState.updateState { it.copy(hideBalance = hide) }
     }
 
     fun setSelfPhone(phone: String) {
         val normalized = UssdManager.normalizePhone(phone)
-        prefsManager?.setSelfPhone(normalized)
+        settingsRepo.setSelfPhone(normalized)
         _uiState.updateState { it.copy(selfPhone = normalized) }
     }
 
@@ -230,50 +283,52 @@ class MainViewModel : ViewModel() {
         _uiState.updateState { it.copy(showConfirmDialog = false) }
     }
 
-    fun isAirplaneModeOn(context: Context): Boolean {
+    fun isAirplaneModeOn(context: Context? = null): Boolean {
         return try {
-            android.provider.Settings.Global.getInt(
-                context.contentResolver,
-                android.provider.Settings.Global.AIRPLANE_MODE_ON, 0
+            Settings.Global.getInt(
+                getApplication<Application>().contentResolver,
+                Settings.Global.AIRPLANE_MODE_ON, 0
             ) != 0
         } catch (e: Exception) {
             false
         }
     }
 
-    fun requestPay(context: Context) {
+    fun requestPay(context: Context? = null) {
         _uiState.updateState { it.copy(errorMessage = "", successMessage = "", payAttempted = true) }
-        
-        if (isAirplaneModeOn(context)) {
-            showError(if (_uiState.value.isAr) "يرجى تعطيل وضع الطيران لإجراء العملية." else "Airplane mode is active. Please disable it to process transactions.")
+
+        val strings = getAppStrings(_uiState.value.isAr)
+
+        if (isAirplaneModeOn()) {
+            showError(strings.errAirplaneMode)
             return
         }
-        
+
         val state = _uiState.value
-        
+
         if (state.sims.isEmpty() && state.selectedSimId == null) {
-            // Give it one defensive scan reload
-            loadSims(context)
+            loadSims()
         }
-        
+
         val updatedState = _uiState.value
-        
+        val updatedStrings = getAppStrings(updatedState.isAr)
+
         if (updatedState.recipient.isBlank() || !UssdManager.isValidPhone(updatedState.recipient)) {
-            showError(if (updatedState.isAr) "أدخل رقم هاتف صحيح" else "Please enter a valid phone number.")
+            showError(updatedStrings.errInvalidPhone)
             return
         }
-        
+
         val amountNum = updatedState.amount.toDoubleOrNull() ?: 0.0
         if (updatedState.amount.isBlank() || amountNum < 1.0) {
-            showError(if (updatedState.isAr) "الحد الأدنى للمبلغ هو 1" else "Minimum amount is 1.")
+            showError(updatedStrings.errMinAmount)
             return
         }
-        
+
         if (updatedState.secretCode.isBlank() || updatedState.secretCode.length != 4) {
-            showError(if (updatedState.isAr) "أدخل الرمز السري من 4 أرقام" else "Please enter a 4-digit PIN.")
+            showError(updatedStrings.errPinRequired)
             return
         }
-        
+
         _uiState.updateState { it.copy(showConfirmDialog = true, payAttempted = false) }
     }
 
@@ -284,18 +339,18 @@ class MainViewModel : ViewModel() {
     fun resetToMain() {
         _uiState.updateState { it.copy(
             currentScreen = Screen.MAIN,
-            amount = "",
+            amount = "10",
             recipient = "",
             recipientName = "",
-            secretCode = "",
+            secretCode = if (it.rememberPin) it.secretCode else "",
             errorMessage = "",
             successMessage = "",
             failureReason = ""
         ) }
     }
-    
+
     fun completeOnboarding() {
-        prefsManager?.setOnboardingCompleted(true)
+        settingsRepo.setOnboardingCompleted(true)
         if (_uiState.value.selfPhone.isEmpty()) {
             navigateTo(Screen.PHONE_SETUP)
         } else {
@@ -303,98 +358,81 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    fun confirmPay(context: Context) {
+    fun confirmPay(context: Context? = null) {
         if (_uiState.value.isConfirmLoading) return
-        
+
         _uiState.updateState { it.copy(isConfirmLoading = true, errorMessage = "", successMessage = "", failureReason = "") }
-        
-        if (_uiState.value.sims.isEmpty()) {
-            loadSims(context)
+
+        if (_uiState.value.rememberPin) {
+            settingsRepo.savePin(_uiState.value.secretCode)
+        } else {
+            settingsRepo.savePin("")
         }
-        
+
+        if (_uiState.value.sims.isEmpty()) {
+            loadSims()
+        }
+
         val currentSims = _uiState.value.sims
         val resolvedSimId = _uiState.value.selectedSimId ?: currentSims.firstOrNull()?.subscriptionId
-        
+
         val state = _uiState.value
         val ussdStr = UssdManager.buildPaymentString(state.paymentType, state.secretCode, state.recipient, state.amount)
-        
+
         payJob = viewModelScope.launch {
             try {
-                withTimeout(8000L) {
-                    UssdManager.sendUssd(
-                        context = context,
+                val result = withTimeout(15000L) {
+                    telephonyRepo.executeUssd(
                         ussdCode = ussdStr,
                         subscriptionId = resolvedSimId,
-                        onResponse = { response ->
-                            payJob?.cancel()
-                            val translation = UssdManager.translateResponse(response, _uiState.value.language)
-                            if (translation.isSuccess) {
-                                val currentBal = _uiState.value.balanceResult.toDoubleOrNull() ?: prefsManager?.getBalance()?.toDoubleOrNull() ?: 0.0
-                                val paidAmt = state.amount.toDoubleOrNull() ?: 0.0
-                                val newBal = (currentBal - paidAmt).coerceAtLeast(0.0)
-                                val formattedBal = if (newBal % 1.0 == 0.0) {
-                                    String.format(java.util.Locale.ENGLISH, "%.0f", newBal)
-                                } else {
-                                    String.format(java.util.Locale.ENGLISH, "%.2f", newBal).trimEnd('0').trimEnd('.')
-                                }
-                                prefsManager?.setBalance(formattedBal)
+                        isAr = _uiState.value.isAr
+                    )
+                }
 
-                                val simObj = state.sims.find { it.subscriptionId == resolvedSimId }
-                                val simLabel = simObj?.displayName ?: "SIM 1"
-                                val currentFormattedTime = java.text.SimpleDateFormat("dd/MM/yyyy • hh:mm a", java.util.Locale.ENGLISH).format(java.util.Date())
-                                
-                                val historyEntry = HistoryEntry(
-                                    number = UssdManager.normalizePhone(state.recipient),
-                                    name = state.recipientName,
-                                    amount = state.amount,
-                                    status = "COMPLETED",
-                                    timestamp = currentFormattedTime,
-                                    simName = simLabel,
-                                    type = state.paymentType.name
-                                )
-                                HistoryManager(context).addHistory(historyEntry)
-                                loadHistory(context)
-                                _uiState.updateState { it.copy(
-                                    balanceResult = formattedBal,
-                                    isConfirmLoading = false,
-                                    showConfirmDialog = false,
-                                    currentScreen = Screen.PAYMENT_SUCCESS,
-                                    successMessage = translation.text,
-                                    secretCode = "",
-                                    showUpdateBadge = false
-                                ) }
+                val simObj = state.sims.find { it.subscriptionId == resolvedSimId }
+                val simLabel = simObj?.displayName ?: "SIM 1"
+                val currentFormattedTime = java.text.SimpleDateFormat("dd/MM/yyyy • hh:mm a", java.util.Locale.ENGLISH).format(java.util.Date())
+
+                when (result) {
+                    is UssdExecutionResult.Success -> {
+                        val response = result.rawResponse
+                        val translation = UssdManager.translateResponse(response, _uiState.value.language)
+                        if (translation.isSuccess) {
+                            val currentBal = _uiState.value.balanceResult.toDoubleOrNull() ?: settingsRepo.getBalance().toDoubleOrNull() ?: 0.0
+                            val paidAmt = state.amount.toDoubleOrNull() ?: 0.0
+                            val newBal = (currentBal - paidAmt).coerceAtLeast(0.0)
+                            val formattedBal = if (newBal % 1.0 == 0.0) {
+                                String.format(java.util.Locale.ENGLISH, "%.0f", newBal)
                             } else {
-                                val simObj = state.sims.find { it.subscriptionId == resolvedSimId }
-                                val simLabel = simObj?.displayName ?: "SIM 1"
-                                val currentFormattedTime = java.text.SimpleDateFormat("dd/MM/yyyy • hh:mm a", java.util.Locale.ENGLISH).format(java.util.Date())
-                                
-                                val historyEntry = HistoryEntry(
-                                    number = UssdManager.normalizePhone(state.recipient),
-                                    name = state.recipientName,
-                                    amount = state.amount,
-                                    status = "FAILED",
-                                    timestamp = currentFormattedTime,
-                                    simName = simLabel,
-                                    type = state.paymentType.name
-                                )
-                                HistoryManager(context).addHistory(historyEntry)
-                                loadHistory(context)
-                                
-                                _uiState.updateState { it.copy(
-                                    isConfirmLoading = false, 
-                                    showConfirmDialog = false,
-                                    currentScreen = Screen.TRANSFER_FAILED,
-                                    failureReason = translation.text,
-                                    secretCode = ""
-                                ) }
+                                String.format(java.util.Locale.ENGLISH, "%.2f", newBal).trimEnd('0').trimEnd('.')
                             }
-                        },
-                        onError = { error ->
-                            payJob?.cancel()
-                            val simObj = state.sims.find { it.subscriptionId == resolvedSimId }
-                            val simLabel = simObj?.displayName ?: "SIM 1"
-                            val currentFormattedTime = java.text.SimpleDateFormat("dd/MM/yyyy • hh:mm a", java.util.Locale.ENGLISH).format(java.util.Date())
-                            
+                            settingsRepo.setBalance(formattedBal)
+                            settingsRepo.setLastRefreshTime(System.currentTimeMillis())
+                            _uiState.updateState { it.copy(lastRefreshTime = System.currentTimeMillis()) }
+
+                            val historyEntry = HistoryEntry(
+                                number = UssdManager.normalizePhone(state.recipient),
+                                name = state.recipientName,
+                                amount = state.amount,
+                                status = "COMPLETED",
+                                timestamp = currentFormattedTime,
+                                simName = simLabel,
+                                type = state.paymentType.name
+                            )
+                            historyRepo.addHistory(historyEntry)
+
+                            _uiState.updateState { it.copy(
+                                balanceResult = formattedBal,
+                                isConfirmLoading = false,
+                                showConfirmDialog = false,
+                                currentScreen = Screen.PAYMENT_SUCCESS,
+                                successMessage = translation.text,
+                                secretCode = if (it.rememberPin) it.secretCode else "",
+                                showUpdateBadge = false,
+                                lastTransactionId = "",
+                                lastTransactionTimestamp = currentFormattedTime
+                            ) }
+                        } else {
                             val historyEntry = HistoryEntry(
                                 number = UssdManager.normalizePhone(state.recipient),
                                 name = state.recipientName,
@@ -404,24 +442,47 @@ class MainViewModel : ViewModel() {
                                 simName = simLabel,
                                 type = state.paymentType.name
                             )
-                            HistoryManager(context).addHistory(historyEntry)
-                            loadHistory(context)
-                            
+                            historyRepo.addHistory(historyEntry)
+
                             _uiState.updateState { it.copy(
-                                isConfirmLoading = false, 
+                                isConfirmLoading = false,
                                 showConfirmDialog = false,
                                 currentScreen = Screen.TRANSFER_FAILED,
-                                failureReason = error,
-                                secretCode = ""
+                                failureReason = translation.text,
+                                secretCode = if (it.rememberPin) it.secretCode else "",
+                                lastTransactionId = "",
+                                lastTransactionTimestamp = currentFormattedTime
                             ) }
                         }
-                    )
+                    }
+                    is UssdExecutionResult.Failure -> {
+                        val historyEntry = HistoryEntry(
+                            number = UssdManager.normalizePhone(state.recipient),
+                            name = state.recipientName,
+                            amount = state.amount,
+                            status = "FAILED",
+                            timestamp = currentFormattedTime,
+                            simName = simLabel,
+                            type = state.paymentType.name
+                        )
+                        historyRepo.addHistory(historyEntry)
+
+                        _uiState.updateState { it.copy(
+                            isConfirmLoading = false,
+                            showConfirmDialog = false,
+                            currentScreen = Screen.TRANSFER_FAILED,
+                            failureReason = result.message,
+                            secretCode = if (it.rememberPin) it.secretCode else "",
+                            lastTransactionId = "",
+                            lastTransactionTimestamp = currentFormattedTime
+                        ) }
+                    }
                 }
             } catch (e: TimeoutCancellationException) {
                 val simObj = state.sims.find { it.subscriptionId == resolvedSimId }
                 val simLabel = simObj?.displayName ?: "SIM 1"
                 val currentFormattedTime = java.text.SimpleDateFormat("dd/MM/yyyy • hh:mm a", java.util.Locale.ENGLISH).format(java.util.Date())
-                
+
                 val historyEntry = HistoryEntry(
                     number = UssdManager.normalizePhone(state.recipient),
                     name = state.recipientName.ifBlank { "Unknown" },
@@ -430,88 +491,102 @@ class MainViewModel : ViewModel() {
                     timestamp = currentFormattedTime,
                     simName = simLabel
                 )
-                HistoryManager(context).addHistory(historyEntry)
-                loadHistory(context)
-                
+                historyRepo.addHistory(historyEntry)
+
                 _uiState.updateState { it.copy(
-                    isConfirmLoading = false, 
+                    isConfirmLoading = false,
                     showConfirmDialog = false
                 ) }
-                showError(if (_uiState.value.isAr) "لا يوجد استجابة من الشريحة. تأكد من تفعيلها." else "SIM not responding. Ensure it is active and has coverage.")
+                showError(getAppStrings(_uiState.value.isAr).errSimNoResponse)
             } catch (e: Exception) {
                 _uiState.updateState { it.copy(
-                    isConfirmLoading = false, 
+                    isConfirmLoading = false,
                     showConfirmDialog = false
                 ) }
-                showError(if (_uiState.value.isAr) "فشل الاتصال بالشريحة. تأكد من أنها مفعلة." else "Failed to connect to SIM. Ensure it is active.")
+                showError(getAppStrings(_uiState.value.isAr).errSimConnectFailed)
             }
         }
     }
 
-    fun checkBalance(context: Context) {
+    fun checkBalance(context: Context? = null) {
         if (_uiState.value.isBalanceLoading) return
-        
+
         _uiState.updateState { it.copy(isBalanceLoading = true, errorMessage = "", successMessage = "", showUpdateBadge = false) }
-        
+
         if (_uiState.value.sims.isEmpty()) {
-            loadSims(context)
+            loadSims()
         }
-        
+
         val currentSims = _uiState.value.sims
         val resolvedSimId = _uiState.value.selectedSimId ?: currentSims.firstOrNull()?.subscriptionId
-        
+
         val ussdStr = UssdManager.buildBalanceString()
-        
+
         balanceJob = viewModelScope.launch {
             try {
-                withTimeout(8000L) {
-                    UssdManager.sendUssd(
-                        context = context,
+                val result = withTimeout(15000L) {
+                    telephonyRepo.executeUssd(
                         ussdCode = ussdStr,
                         subscriptionId = resolvedSimId,
-                        onResponse = { response ->
-                            balanceJob?.cancel()
-                            val translation = UssdManager.translateResponse(response, _uiState.value.language)
-                            if (translation.isError) {
-                                _uiState.updateState { it.copy(isBalanceLoading = false) }
-                                showError(translation.text)
-                            } else {
-                                val extracted = UssdManager.extractBalanceAmount(response)
-                                if (extracted.isNotBlank()) {
-                                    prefsManager?.setBalance(extracted)
-                                    _uiState.updateState { it.copy(
-                                        isBalanceLoading = false,
-                                        balanceResult = extracted
-                                    ) }
-                                } else {
-                                    _uiState.updateState { it.copy(isBalanceLoading = false) }
-                                }
-                            }
-                        },
-                        onError = { error ->
-                            balanceJob?.cancel()
-                            _uiState.updateState { it.copy(isBalanceLoading = false) }
-                            showError(if (_uiState.value.isAr) "فشل رمز USSD. الشريحة غير مفعلة أو لا توجد تغطية." else "USSD code failed. SIM may be inactive or no coverage.")
-                        }
+                        isAr = _uiState.value.isAr
                     )
+                }
+                when (result) {
+                    is UssdExecutionResult.Success -> {
+                        val response = result.rawResponse
+                        val translation = UssdManager.translateResponse(response, _uiState.value.language)
+                        if (translation.isError) {
+                            _uiState.updateState { it.copy(isBalanceLoading = false) }
+                            showError(translation.text)
+                        } else {
+                            val extracted = UssdManager.extractBalanceAmount(response)
+                            if (extracted.isNotBlank()) {
+                                val prevBal = settingsRepo.getBalance().toDoubleOrNull()
+                                val newBal = extracted.toDoubleOrNull()
+                                if (prevBal != null && newBal != null && prevBal != newBal) {
+                                    val diff = newBal - prevBal
+                                    val formattedDiff = if (diff % 1.0 == 0.0) {
+                                        String.format(java.util.Locale.ENGLISH, "%+.0f", diff)
+                                    } else {
+                                        String.format(java.util.Locale.ENGLISH, "%+.2f", diff).trimEnd('0').trimEnd('.')
+                                    }
+                                    settingsRepo.setBalanceDifference(formattedDiff)
+                                    _uiState.updateState { it.copy(balanceDifference = formattedDiff) }
+                                }
+                                settingsRepo.setBalance(extracted)
+                                settingsRepo.setLastRefreshTime(System.currentTimeMillis())
+                                _uiState.updateState { it.copy(lastRefreshTime = System.currentTimeMillis()) }
+                                _uiState.updateState { it.copy(
+                                    isBalanceLoading = false,
+                                    balanceResult = extracted
+                                ) }
+                            } else {
+                                _uiState.updateState { it.copy(isBalanceLoading = false) }
+                            }
+                        }
+                    }
+                    is UssdExecutionResult.Failure -> {
+                        _uiState.updateState { it.copy(isBalanceLoading = false) }
+                        showError(getAppStrings(_uiState.value.isAr).errUssdFailed)
+                    }
                 }
             } catch (e: TimeoutCancellationException) {
                 _uiState.updateState { it.copy(isBalanceLoading = false) }
-                showError(if (_uiState.value.isAr) "لا يوجد استجابة من الشريحة. تأكد من تفعيلها." else "SIM not responding. Ensure it is active and has coverage.")
+                showError(getAppStrings(_uiState.value.isAr).errSimNoResponse)
             } catch (e: Exception) {
                 _uiState.updateState { it.copy(isBalanceLoading = false) }
-                showError(if (_uiState.value.isAr) "فشل الاتصال بالشريحة. تأكد من أنها مفعلة." else "Failed to connect to SIM. Ensure it is active.")
+                showError(getAppStrings(_uiState.value.isAr).errSimConnectFailed)
             }
         }
     }
 
-    fun resolveContact(context: Context, uri: Uri) {
+    fun resolveContact(uri: Uri) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val rawPhone = ContactsHelper.getPhoneFromUri(context, uri)
+                val rawPhone = contactsRepo.getPhoneFromUri(uri)
                 if (rawPhone != null) {
                     val normalized = UssdManager.normalizePhone(rawPhone)
-                    val displayName = ContactsHelper.lookupName(context, normalized) ?: ContactsHelper.getNameFromUri(context, uri) ?: ""
+                    val displayName = contactsRepo.lookupName(normalized) ?: contactsRepo.getNameFromUri(uri) ?: ""
                     withContext(Dispatchers.Main) {
                         _uiState.updateState { it.copy(
                             recipient = normalized,
@@ -531,7 +606,9 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    fun setRecipientFromQr(content: String, context: Context) {
+    fun resolveContact(context: Context, uri: Uri) = resolveContact(uri)
+
+    fun setRecipientFromQr(content: String, context: Context? = null) {
         try {
             val parsed = PmaQrManager.parseQrCode(content)
             if (parsed != null) {
@@ -551,18 +628,22 @@ class MainViewModel : ViewModel() {
                     return
                 }
 
-                val displayName = ContactsHelper.lookupName(context, normalizedPhone) ?: ""
-                _uiState.updateState { it.copy(
-                    recipient = normalizedPhone,
-                    recipientName = displayName,
-                    paymentType = resolvedType,
-                    errorMessage = ""
-                ) }
+                viewModelScope.launch(Dispatchers.IO) {
+                    val displayName = contactsRepo.lookupName(normalizedPhone) ?: ""
+                    withContext(Dispatchers.Main) {
+                        _uiState.updateState { it.copy(
+                            recipient = normalizedPhone,
+                            recipientName = displayName,
+                            paymentType = resolvedType,
+                            errorMessage = ""
+                        ) }
+                    }
+                }
             } else {
-                showError(if (_uiState.value.isAr) "رمز QR غير صالح" else "Invalid QR content scanned.")
+                showError(getAppStrings(_uiState.value.isAr).errInvalidQr)
             }
         } catch (e: Exception) {
-            showError(if (_uiState.value.isAr) "رمز QR غير صالح" else "Invalid QR content scanned.")
+            showError(getAppStrings(_uiState.value.isAr).errInvalidQr)
         }
     }
 
@@ -576,12 +657,12 @@ class MainViewModel : ViewModel() {
         } else {
             _uiState.value.paymentType
         }
-    
+
         _uiState.updateState { it.copy(
             recipient = number,
             amount = amount,
             paymentType = paymentType,
-            secretCode = "",
+            secretCode = if (it.rememberPin) it.secretCode else "",
             currentScreen = Screen.MAIN,
             errorMessage = "",
             successMessage = "",

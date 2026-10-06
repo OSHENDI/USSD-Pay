@@ -25,7 +25,9 @@ import com.google.android.play.core.install.model.AppUpdateType
 import com.google.android.play.core.install.model.InstallStatus
 import com.google.android.play.core.install.model.UpdateAvailability
 
-class MainActivity : ComponentActivity() {
+import androidx.appcompat.app.AppCompatActivity
+
+class MainActivity : AppCompatActivity() {
 
     private val viewModel: MainViewModel by viewModels()
     private var permissionsRequested = false
@@ -46,10 +48,10 @@ class MainActivity : ComponentActivity() {
     private val requestPermissionsLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
             if (results[Manifest.permission.READ_PHONE_STATE] == true) {
-                viewModel.loadSims(this)
+                viewModel.loadSims()
             }
             if (results[Manifest.permission.CALL_PHONE] == true) {
-                viewModel.checkBalanceOnColdStart(this)
+                viewModel.checkBalanceOnColdStart()
             }
         }
 
@@ -58,7 +60,7 @@ class MainActivity : ComponentActivity() {
             if (result.resultCode == Activity.RESULT_OK) {
                 val payload = result.data?.getStringExtra(QrScannerActivity.EXTRA_RESULT)
                 if (payload != null) {
-                    viewModel.setRecipientFromQr(payload, this)
+                    viewModel.setRecipientFromQr(payload)
                 }
             }
         }
@@ -67,7 +69,6 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        viewModel.initialize(this)
         checkForAppUpdates()
 
         setContent {
@@ -87,8 +88,8 @@ class MainActivity : ComponentActivity() {
         val hasPhoneStatePermission = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
 
         if (hasCallPermission && hasPhoneStatePermission) {
-            viewModel.loadSims(this)
-            viewModel.checkBalanceOnColdStart(this)
+            viewModel.loadSims()
+            viewModel.checkBalanceOnColdStart()
         } else if (!permissionsRequested) {
             permissionsRequested = true
             Handler(Looper.getMainLooper()).postDelayed({

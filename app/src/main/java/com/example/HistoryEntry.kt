@@ -1,6 +1,7 @@
 package com.example
 
 data class HistoryEntry(
+    val id: Int = 0,
     val number: String,
     val name: String = "",
     val amount: String = "150.00",

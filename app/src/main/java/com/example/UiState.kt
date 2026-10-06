@@ -17,7 +17,7 @@ data class UiState(
     val paymentType: PaymentType = PaymentType.FRIEND,
     val recipient: String = "",
     val recipientName: String = "",
-    val amount: String = "",
+    val amount: String = "10",
     val secretCode: String = "",
     val balanceResult: String = "",
     val selfPhone: String = "",
@@ -36,6 +36,12 @@ data class UiState(
     val isConfirmLoading: Boolean = false,
     val showUpdateBadge: Boolean = false,
     val isDarkMode: Boolean = false,
-    val hideBalance: Boolean = false
+    val hideBalance: Boolean = false,
+    val rememberPin: Boolean = true,
+    val lastRefreshTime: Long = 0L,
+    val historySortAscending: Boolean = false,
+    val lastTransactionId: String = "",
+    val lastTransactionTimestamp: String = "",
+    val balanceDifference: String = ""
 )
 
